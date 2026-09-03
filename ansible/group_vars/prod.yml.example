@@ -1,0 +1,112 @@
+---
+# Минимальный набор переменных для боевого сервера.
+#
+#   cp group_vars/prod.yml.example group_vars/prod.yml
+#
+# Обязательных переменных всего две: mon_networks и mon_services.
+# Всё остальное имеет умолчания в roles/monitoring/defaults/main.yml.
+
+# ---- 1. Сети ----------------------------------------------------------------
+# Alloy обязан делить сеть С КАЖДЫМ сервисом, который он пробит, и с
+# Prometheus: имена вроде redis:6379 резолвит встроенный DNS docker, а он
+# работает только внутри общей сети.
+#
+# Поэтому здесь перечисляются: сеть(и) прикладных сервисов + сеть Prometheus.
+# Сети мониторинга самой по себе НЕ ДОСТАТОЧНО - в ней нет ваших сервисов.
+#
+# Что где лежит, покажет scripts/show_networks.sh (запускать на сервере).
+mon_networks:
+  - monitoring_internal   # здесь Prometheus
+  - monitoring_external
+  # - app_net             # <- сеть ваших сервисов, посмотрите её имя
+
+# ---- 2. Сервисы -------------------------------------------------------------
+# Адреса пишутся так, как их видит Alloy изнутри docker-сети, то есть
+# <имя контейнера или сетевой алиас>:<порт>.
+# Имена контейнеров: docker ps --format '{{ "{{" }}.Names{{ "}}" }}'
+#
+# Обязательные поля: name, group, probe.module, probe.address.
+# Необязательные:    kind, metrics, exporter.
+mon_services:
+  - name: redis
+    group: infra
+    probe: {module: tcp_connect, address: "redis:6379"}
+    exporter: redis
+    exporter_address: "redis:6379"
+
+  - name: elasticsearch
+    group: infra
+    probe: {module: http_2xx, address: "http://elasticsearch:9200/_cluster/health"}
+    exporter: elasticsearch
+    exporter_address: "http://elasticsearch:9200"
+
+  - name: keycloak
+    group: infra
+    probe: {module: http_2xx, address: "http://keycloak:9000/health/ready"}
+    metrics: {address: "keycloak:9000", path: /metrics}
+
+  - name: zeebe
+    group: zeebe
+    probe: {module: http_2xx, address: "http://zeebe:9600/actuator/health"}
+    metrics: {address: "zeebe:9600", path: /actuator/prometheus}
+
+  # Шлюз проверяется отдельно: actuator может отвечать 200, пока gRPC-порт
+  # ещё не принимает соединения от воркеров.
+  - name: zeebe-gateway
+    group: zeebe
+    probe: {module: tcp_connect, address: "zeebe:26500"}
+
+  - name: hazelcast
+    group: zeebe
+    probe: {module: http_2xx, address: "http://hazelcast:5701/hazelcast/health/node-state"}
+
+  # Дальше - ваши сервисы. Минимальная запись:
+  #
+  #   - name: my-python-worker-01
+  #     group: workers
+  #     probe: {module: http_2xx, address: "http://my-python-worker-01:8080/health"}
+  #
+  # Если health-эндпоинта нет совсем - проверяйте порт. Учтите ограничение:
+  # tcp_connect не отличит живой сервис от зависшего, см. README.
+  #
+  #   - name: my-cpp-service
+  #     group: apps
+  #     probe: {module: tcp_connect, address: "my-cpp-service:5000"}
+
+# =============================================================================
+# Дальше - только если у вас не как по умолчанию. Всё закомментировано.
+# =============================================================================
+
+# Prometheus глазами Alloy (изнутри docker-сети) и глазами Ansible.
+# mon_remote_write_url: http://prometheus:9090/api/v1/write
+# mon_prometheus_api_url: http://127.0.0.1:9090
+
+# Каталоги ДОЛЖНЫ быть смонтированы в Prometheus и Grafana - роль их только
+# наполняет. По умолчанию /opt/monitoring/{prometheus/rules,grafana/dashboards}.
+# mon_config_dir: /opt/monitoring
+# mon_rules_dir: /etc/prometheus/rules
+# mon_dashboards_dir: /var/lib/grafana/dashboards
+
+# uid датасорса Prometheus в вашей Grafana.
+# mon_datasource_uid: prometheus
+
+# Префикс recording-правил: svc:service_status и т.д.
+# mon_prefix: svc
+
+# Alertmanager по умолчанию не разворачивается - обычно он уже есть.
+# mon_deploy_alertmanager: false
+
+# Пороги.
+# mon_slow_probe_seconds: 2
+# mon_disk_warn_ratio: 0.8
+# mon_disk_crit_ratio: 0.9
+# mon_disk_free_warn_gib: 50
+# mon_disk_free_crit_gib: 10
+
+# Раскладка дашборда. Если не задавать, роль выведет её сама: по строке на
+# группу во всю ширину. Задают явно, чтобы поставить группы в ряд.
+# mon_groups:
+#   - {key: infra,   title: "",              width: 6,  height: 3}
+#   - {key: zeebe,   title: "",              width: 10, height: 3}
+#   - {key: apps,    title: "",              width: 8,  height: 3}
+#   - {key: workers, title: "Воркеры Zeebe", width: 24, height: 4}

@@ -1,0 +1,116 @@
+# СГЕНЕРИРОВАНО Ansible - правьте не этот файл, а group_vars.
+#
+# Светофор сервисов: 0 = красный (недоступен), 1 = жёлтый (работает плохо),
+# 2 = зелёный (в порядке).
+#
+# Логика живёт здесь, а не в дашборде, по одной причине: цвет на экране и
+# условие алерта должны считаться из одного выражения. Иначе рано или поздно
+# панель зелёная, а алерт горит - и наоборот.
+groups:
+  - name: {{ mon_prefix }}-service-status
+    interval: 15s
+    rules:
+      # ---- Жив или нет -------------------------------------------------------
+      # Источник - blackbox-проба по статическому инвентарю. Контейнера нет ->
+      # имя не резолвится -> проба честно даёт 0, а не "нет данных".
+      - record: {{ mon_prefix }}:service_up
+        expr: max by (service, group, kind) (probe_success{job="{{ mon_prefix }}-blackbox"})
+
+      # ---- Деградация --------------------------------------------------------
+      # Сигналы разнородные, поэтому каждый сначала сводится к 0/1 по service,
+      # получает свою метку src и только потом складывается через max.
+      #
+      # Метка src обязательна: без неё `or` схлопнул бы одинаковые наборы
+      # лейблов и оставил только первый источник, молча потеряв остальные.
+      - record: {{ mon_prefix }}:service_degraded
+        expr: |
+          max by (service) (
+              label_replace(
+                max by (service) (
+                  probe_duration_seconds{job="{{ mon_prefix }}-blackbox"} > bool {{ mon_slow_probe_seconds }}
+                ),
+                "src", "slow", "", "")
+            or
+              label_replace(
+                max by (service) (app_degraded),
+                "src", "app", "", "")
+            or
+              label_replace(
+                max by (service) (
+                  elasticsearch_cluster_health_status{color="yellow"}
+                ),
+                "src", "es_yellow", "", "")
+            or
+              label_replace(
+                max by (service) (
+                  clamp_max(
+                      (1 - redis_rdb_last_bgsave_status)
+                    + (redis_memory_used_bytes
+                       / clamp_min(redis_memory_max_bytes, 1) > bool 0.9),
+                    1)
+                ),
+                "src", "redis", "", "")
+            or
+              # zeebe_health: 1 - здоров, 0 - нездоров, -1 - мёртв.
+              # Берём min по партициям: одна больная партиция делает
+              # брокера жёлтым, даже если остальные в порядке.
+              label_replace(
+                min by (service) (zeebe_health) != bool 1,
+                "src", "zeebe", "", "")
+            or
+              # Страховка: если ни один источник не дал серию для сервиса,
+              # деградация считается нулевой, а не пропадает вместе со статусом.
+              label_replace(
+                max by (service) ({{ mon_prefix }}:service_up) * 0,
+                "src", "none", "", "")
+          )
+
+      # ---- Достижимость по данным родного экспортера -------------------------
+      # tcp-проба проверяет только то, что ядро приняло соединение. Процесс
+      # при этом может быть заморожен, зациклен или не отвечать - проба всё
+      # равно зелёная. Родной экспортер это видит, и его мнение здесь важнее.
+      #
+      # Сервисы без экспортера получают 1 из последней ветки: отсутствие
+      # экспортера не должно красить их в красный.
+      - record: {{ mon_prefix }}:service_reachable
+        expr: |
+{% for s in mon_services if s.exporter is defined %}
+          max by (service) ({{ mon_exporter_up_metrics[s.exporter] }})
+          or
+{% endfor %}
+          (max by (service) ({{ mon_prefix }}:service_up) * 0 + 1)
+
+      # ---- Итоговый статус ---------------------------------------------------
+      # up=0 или недостижим        -> 0 (красный)
+      # up=1, достижим, degr=1     -> 1 (жёлтый)
+      # up=1, достижим, degr=0     -> 2 (зелёный)
+      - record: {{ mon_prefix }}:service_status
+        expr: |
+          {{ mon_prefix }}:service_up
+          * on (service) group_left () {{ mon_prefix }}:service_reachable
+          * on (service) group_left ()
+          (2 - {{ mon_prefix }}:service_degraded)
+
+  - name: {{ mon_prefix }}-disk
+    interval: 30s
+    rules:
+      # Доля ЗАНЯТОГО места. Свободное - отдельным правилом ниже: путать
+      # эти две величины на дашборде очень легко, поэтому они разведены.
+      - record: {{ mon_prefix }}:disk_used_ratio
+        expr: |
+          1 - (
+            node_filesystem_avail_bytes{job="{{ mon_prefix }}-host"}
+            / node_filesystem_size_bytes{job="{{ mon_prefix }}-host"}
+          )
+
+      # Свободно, в байтах - то, что человек обычно и хочет увидеть.
+      - record: {{ mon_prefix }}:disk_avail_bytes
+        expr: node_filesystem_avail_bytes{job="{{ mon_prefix }}-host"}
+
+      # Тот же светофор для диска. Через floor, а не двумя правилами,
+      # чтобы пороги стояли в одном месте и не разъезжались.
+      - record: {{ mon_prefix }}:disk_status
+        expr: |
+          2
+          - clamp_max(floor({{ mon_prefix }}:disk_used_ratio / {{ mon_disk_warn_ratio }}), 1)
+          - clamp_max(floor({{ mon_prefix }}:disk_used_ratio / {{ mon_disk_crit_ratio }}), 1)

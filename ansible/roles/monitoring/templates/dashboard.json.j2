@@ -1,0 +1,219 @@
+{#
+  СГЕНЕРИРОВАНО Ansible - правьте не этот файл, а mon_groups в group_vars.
+
+  Раскладка считается из mon_groups: панели выкладываются слева направо,
+  пока помещаются в 24 колонки Grafana, потом переносятся на новую строку.
+  Ширину и высоту каждой группы задаёт сама группа.
+
+  Цвет задаётся ПОРОГАМИ, а не цветом из mappings. Это не дублирование:
+  stat берёт цвет из mappings, а state-timeline красит регионы по порогам
+  и цвет из mappings игнорирует - с одним базовым красным шагом вся история
+  статусов оказывалась красной при зелёных сервисах. Пороги работают
+  одинаково везде, за mappings остаётся только текст.
+#}
+{% set ds = {"type": "prometheus", "uid": mon_datasource_uid} %}
+{#
+  Колонки: либо заданные явно, либо выведенные из сервисов - по строке на
+  группу во всю ширину, в порядке первого появления группы.
+#}
+{% set gns = namespace(groups=[]) %}
+{% if mon_groups %}
+{%   set gns.groups = mon_groups %}
+{% else %}
+{%   for key in mon_services | map(attribute='group') | unique | list %}
+{%     set cnt = mon_services | selectattr('group', 'equalto', key) | list | length %}
+{%     set gns.groups = gns.groups + [{'key': key, 'title': key, 'width': 24, 'height': 4 if cnt > 6 else 3}] %}
+{%   endfor %}
+{% endif %}
+{% set ns = namespace(x=0, y=0, row_h=0, id=0) %}
+{
+  "uid": "{{ mon_dashboard_uid }}",
+  "title": "{{ mon_dashboard_title }}",
+  "description": "Светофор доступности. Цвет считается recording-правилом {{ mon_prefix }}:service_status: 0 - недоступен, 1 - работает деградированно, 2 - в порядке. Тем же выражением заданы алерты, поэтому панель и алерт не могут разойтись.",
+  "tags": ["alloy", "status"],
+  "timezone": "browser",
+  "editable": true,
+  "schemaVersion": 41,
+  "version": 1,
+  "refresh": "{{ mon_dashboard_refresh }}",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+{% for g in gns.groups %}
+{%   if ns.x + g.width > 24 %}
+{%     set ns.y = ns.y + ns.row_h %}
+{%     set ns.x = 0 %}
+{%     set ns.row_h = 0 %}
+{%   endif %}
+{%   set ns.id = ns.id + 1 %}
+    {
+      "id": {{ ns.id }},
+      "type": "stat",
+      "title": "{{ g.title | default('') }}",
+      "datasource": {{ ds | to_json }},
+      "gridPos": {"h": {{ g.height }}, "w": {{ g.width }}, "x": {{ ns.x }}, "y": {{ ns.y }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": {{ mon_status_mappings | to_json }},
+          "thresholds": {{ mon_status_thresholds | to_json }},
+          "unit": "none",
+          "min": 0,
+          "max": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {{ ds | to_json }},
+          "expr": "{{ mon_prefix }}:service_status{group=\"{{ g.key }}\"}",
+          "legendFormat": "{{ '{{service}}' }}",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+{%   set ns.x = ns.x + g.width %}
+{%   set ns.row_h = [ns.row_h, g.height] | max %}
+{% endfor %}
+{% set ns.y = ns.y + ns.row_h %}
+    {
+      "id": 90,
+      "type": "stat",
+      "title": "Свободно на диске",
+      "description": "Сколько места осталось. Жёлтый ниже {{ mon_disk_free_warn_gib }} ГиБ, красный ниже {{ mon_disk_free_crit_gib }} ГиБ.",
+      "datasource": {{ ds | to_json }},
+      "gridPos": {"h": 3, "w": 8, "x": 0, "y": {{ ns.y }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "bytes",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "red", "value": null},
+              {"color": "yellow", "value": {{ (mon_disk_free_crit_gib | float * 1024 * 1024 * 1024) | int }}},
+              {"color": "green", "value": {{ (mon_disk_free_warn_gib | float * 1024 * 1024 * 1024) | int }}}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "wideLayout": true,
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "showPercentChange": false,
+        "percentChangeColorMode": "standard"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {{ ds | to_json }},
+          "expr": "{{ mon_prefix }}:disk_avail_bytes",
+          "legendFormat": "{{ '{{mountpoint}}' }}",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 91,
+      "type": "bargauge",
+      "title": "Занято на диске",
+      "description": "Доля занятого места. Жёлтый от {{ (mon_disk_warn_ratio * 100) | int }}%, красный от {{ (mon_disk_crit_ratio * 100) | int }}%.",
+      "datasource": {{ ds | to_json }},
+      "gridPos": {"h": 3, "w": 16, "x": 8, "y": {{ ns.y }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": {{ mon_disk_warn_ratio }}},
+              {"color": "red", "value": {{ mon_disk_crit_ratio }}}
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+        "showUnfilled": true,
+        "valueMode": "color",
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "sizing": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {{ ds | to_json }},
+          "expr": "{{ mon_prefix }}:disk_used_ratio",
+          "legendFormat": "{{ '{{mountpoint}}' }}",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 92,
+      "type": "state-timeline",
+      "title": "История статусов",
+      "description": "Тот же светофор во времени: видно, что мигало, а что лежало.",
+      "datasource": {{ ds | to_json }},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": {{ ns.y + 3 }}},
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "thresholds"},
+          "mappings": {{ mon_status_mappings | to_json }},
+          "thresholds": {{ mon_status_thresholds | to_json }},
+          "custom": {"fillOpacity": 85, "lineWidth": 0, "spanNulls": false},
+          "min": 0,
+          "max": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "mergeValues": true,
+        "showValue": "never",
+        "alignValue": "center",
+        "rowHeight": 0.9,
+        "legend": {"displayMode": "list", "placement": "bottom", "showLegend": false},
+        "tooltip": {"mode": "single", "sort": "none"}
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {{ ds | to_json }},
+          "expr": "{{ mon_prefix }}:service_status",
+          "legendFormat": "{{ '{{service}}' }}",
+          "instant": false,
+          "range": true
+        }
+      ]
+    }
+  ]
+}

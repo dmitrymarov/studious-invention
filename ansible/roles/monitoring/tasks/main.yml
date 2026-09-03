@@ -1,0 +1,225 @@
+---
+# ---------------------------------------------------------------- вход
+- name: Проверить обязательные переменные
+  ansible.builtin.assert:
+    that:
+      - mon_services | length > 0
+      - mon_networks | length > 0
+    fail_msg: >-
+      Не заданы mon_services или mon_networks - это единственные две
+      обязательные переменные роли. См. group_vars/prod.yml.example.
+
+- name: Проверить описание каждого сервиса
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.group is defined
+      - item.probe is defined
+      - item.probe.module in ['http_2xx', 'http_any', 'tcp_connect']
+      - item.probe.address is defined
+    fail_msg: >-
+      Сервис {{ item.name | default('(без имени)') }}: нужны name, group и
+      probe с полями module (http_2xx | http_any | tcp_connect) и address.
+  loop: "{{ mon_services }}"
+  loop_control:
+    label: "{{ item.name | default('?') }}"
+
+- name: Проверить, что у экспортеров известна метрика доступности
+  ansible.builtin.assert:
+    that: item.exporter in mon_exporter_up_metrics
+    fail_msg: >-
+      Сервис {{ item.name }}: экспортер {{ item.exporter }} не описан в
+      mon_exporter_up_metrics - неизвестно, какая метрика означает
+      "сервис доступен".
+  loop: "{{ mon_services | selectattr('exporter', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# --------------------------------------------------------- предпосылки
+# Роль не разворачивает Prometheus и Grafana - они уже есть. Но без пары
+# флагов и существующих сетей она молча соберёт неработающий мониторинг,
+# поэтому проверяем это заранее, а не по отсутствию метрик через полчаса.
+- name: Проверить наличие docker-сетей
+  ansible.builtin.command:
+    argv: [docker, network, inspect, "{{ item }}"]
+  loop: "{{ mon_networks }}"
+  register: mon_net_check
+  changed_when: false
+  failed_when: false
+  when: mon_preflight
+
+- name: Убедиться, что все сети существуют
+  ansible.builtin.assert:
+    that: item.rc == 0
+    fail_msg: >-
+      Docker-сеть {{ item.item }} не найдена. Alloy должен видеть и сервисы,
+      и Prometheus - создайте сеть или поправьте mon_networks.
+  loop: "{{ mon_net_check.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: mon_preflight
+
+- name: Запросить флаги Prometheus
+  ansible.builtin.uri:
+    url: "{{ mon_prometheus_api_url }}/api/v1/status/flags"
+    return_content: true
+  register: mon_flags
+  failed_when: false
+  when: mon_preflight
+
+- name: Убедиться, что Prometheus принимает remote_write
+  ansible.builtin.assert:
+    that: mon_flags.json.data['web.enable-remote-write-receiver'] | default('false') == 'true'
+    fail_msg: >-
+      Prometheus запущен без --web.enable-remote-write-receiver. Alloy пушит
+      метрики, писать ему будет некуда. Добавьте флаг и перезапустите
+      Prometheus.
+  when:
+    - mon_preflight
+    - mon_flags.status | default(0) == 200
+
+- name: Предупредить, если Prometheus не умеет перечитывать конфиг
+  ansible.builtin.debug:
+    msg: >-
+      Prometheus запущен без --web.enable-lifecycle: новые правила подхватятся
+      только после его перезапуска, роль сделать это не сможет.
+  when:
+    - mon_preflight
+    - mon_flags.status | default(0) == 200
+    - mon_flags.json.data['web.enable-lifecycle'] | default('false') != 'true'
+
+# ------------------------------------------------------ раскладка панелей
+# mon_groups не обязательна: если её не задать, шаблон дашборда выведет
+# колонки из самих сервисов - по строке на группу во всю ширину. Вывод живёт
+# в шаблоне, а не в set_fact, потому что set_fact не может перебить
+# переменную, заданную через -e, и раскладка молча ломалась бы.
+- name: Проверить, что группа каждого сервиса есть в заданной раскладке
+  ansible.builtin.assert:
+    that: item.group in (mon_groups | map(attribute='key') | list)
+    fail_msg: "Сервис {{ item.name }}: группа {{ item.group }} отсутствует в mon_groups"
+  loop: "{{ mon_services }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: mon_groups | length > 0
+
+# ----------------------------------------------------------- раскатка
+- name: Создать каталоги
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: "0755"
+  loop:
+    - "{{ mon_config_dir }}/alloy"
+    - "{{ mon_config_dir }}/alertmanager"
+    - "{{ mon_rules_dir }}"
+    - "{{ mon_dashboards_dir }}"
+
+- name: Развернуть конфиг Alloy
+  ansible.builtin.template:
+    src: config.alloy.j2
+    dest: "{{ mon_config_dir }}/alloy/config.alloy"
+    mode: "0644"
+  notify: Перечитать конфиг Alloy
+
+- name: Развернуть модули blackbox
+  ansible.builtin.template:
+    src: blackbox.yml.j2
+    dest: "{{ mon_config_dir }}/alloy/blackbox.yml"
+    mode: "0644"
+  notify: Перечитать конфиг Alloy
+
+- name: Развернуть конфиг Alertmanager
+  ansible.builtin.template:
+    src: alertmanager.yml.j2
+    dest: "{{ mon_config_dir }}/alertmanager/alertmanager.yml"
+    mode: "0644"
+  when: mon_deploy_alertmanager
+
+- name: Развернуть правила Prometheus
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "{{ mon_rules_dir }}/{{ item }}"
+    mode: "0644"
+  loop:
+    - service-status.yml
+    - service-alerts.yml
+  notify: Перечитать конфиг Prometheus
+
+- name: Развернуть дашборд
+  ansible.builtin.template:
+    src: dashboard.json.j2
+    dest: "{{ mon_dashboards_dir }}/{{ mon_dashboard_uid }}.json"
+    mode: "0644"
+
+- name: Развернуть compose агента
+  ansible.builtin.template:
+    src: docker-compose.monitoring.yml.j2
+    dest: "{{ mon_config_dir }}/docker-compose.monitoring.yml"
+    mode: "0644"
+
+# Проверяем сгенерированное ДО перезапуска: сломанный шаблон иначе положит
+# работающий агент, и обнаружится это только по пропавшим метрикам.
+- name: Проверить синтаксис конфига Alloy
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - -v
+      - "{{ mon_config_dir }}/alloy:/etc/alloy:ro"
+      - "{{ mon_alloy_image }}"
+      - fmt
+      - /etc/alloy/config.alloy
+  changed_when: false
+
+- name: Проверить правила Prometheus
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      - -v
+      - "{{ mon_rules_dir }}:/rules:ro"
+      - --entrypoint
+      - promtool
+      - "{{ mon_promtool_image }}"
+      - check
+      - rules
+      - /rules/service-status.yml
+      - /rules/service-alerts.yml
+  changed_when: false
+
+- name: Проверить, что дашборд - валидный JSON
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - "import json,sys; json.load(open(sys.argv[1]))"
+      - "{{ mon_dashboards_dir }}/{{ mon_dashboard_uid }}.json"
+  changed_when: false
+
+# ------------------------------------------------------------- запуск
+- name: Поднять агент мониторинга
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - -f
+      - "{{ mon_config_dir }}/docker-compose.monitoring.yml"
+      - up
+      - -d
+  register: mon_up
+  changed_when: "'Started' in mon_up.stderr or 'Created' in mon_up.stderr or 'Recreated' in mon_up.stderr"
+  tags: [deploy]
+
+# alloy fmt разбирает синтаксис, но не резолвит пути к файлам и адреса.
+# Поэтому единственная надёжная проверка - агент поднялся и отвечает.
+- name: Дождаться готовности Alloy
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ mon_alloy_port }}/-/ready"
+    status_code: [200]
+  register: mon_ready
+  until: mon_ready.status == 200
+  retries: 12
+  delay: 5
+  tags: [deploy]

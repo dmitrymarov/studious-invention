@@ -1,0 +1,27 @@
+---
+galaxy_info:
+  role_name: monitoring
+  author: dmitrymarov
+  description: >-
+    Светофор доступности сервисов в docker: Grafana Alloy собирает пробы и
+    метрики, Prometheus считает статус recording-правилами, Grafana рисует
+    плитки. Prometheus и Grafana роль не разворачивает - предполагается,
+    что они уже есть.
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions: [jammy, noble]
+    - name: Debian
+      versions: [bullseye, bookworm]
+    - name: EL
+      versions: ["8", "9"]
+  galaxy_tags:
+    - monitoring
+    - prometheus
+    - grafana
+    - alloy
+    - docker
+
+# Роль использует только ansible.builtin - ставить коллекции не нужно.
+dependencies: []

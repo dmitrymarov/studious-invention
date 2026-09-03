@@ -1,0 +1,15 @@
+---
+# Alloy перечитывает конфиг по SIGHUP, перезапуск не нужен.
+- name: Перечитать конфиг Alloy
+  ansible.builtin.command:
+    argv: [docker, kill, -s, HUP, monitoring-alloy]
+  failed_when: false
+  changed_when: true
+
+# Требует, чтобы Prometheus был запущен с --web.enable-lifecycle.
+- name: Перечитать конфиг Prometheus
+  ansible.builtin.uri:
+    url: "{{ mon_prometheus_reload_url }}"
+    method: POST
+    status_code: [200, 204]
+  failed_when: false

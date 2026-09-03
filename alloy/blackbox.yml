@@ -1,0 +1,36 @@
+# СГЕНЕРИРОВАНО Ansible.
+#
+# Модули blackbox-проб. Отдельный файл, а не инлайн в config.alloy: YAML
+# внутри строки Alloy читается плохо и правится ещё хуже.
+modules:
+  # Обычная проверка живости: 2xx = сервис отвечает.
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      # Без этих двух строк проба сначала ждёт таймаута по IPv6 и
+      # probe_duration_seconds раздувается на ровном месте.
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      follow_redirects: false
+      valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+
+  # Для эндпоинтов, которые в норме отвечают не-200: важен сам факт ответа.
+  http_any:
+    prober: http
+    timeout: 5s
+    http:
+      method: GET
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false
+      follow_redirects: false
+      valid_status_codes: [200, 201, 204, 401, 403, 503]
+
+  # Сервисы без HTTP - проверяем, что порт принимает соединение.
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+    tcp:
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: false

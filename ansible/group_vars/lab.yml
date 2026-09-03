@@ -1,0 +1,278 @@
+---
+# Сервисы стенда. Это единственное место, где перечислен их состав:
+# отсюда генерируются пробы Alloy, скрейпы метрик и панели дашборда.
+#
+# Поля сервиса:
+#   name    подпись на дашборде, попадает в метку service
+#   group   колонка дашборда (должна быть среди mon_groups)
+#   kind    свободное описание, попадает в метку kind
+#   probe   что пробить: module = tcp_connect | http_2xx | http_any
+#   metrics необязательно: откуда забирать /metrics самого сервиса
+#   exporter необязательно: поднять родной экспортер Alloy (redis | elasticsearch)
+
+mon_node_label: wsl
+mon_config_dir: /home/marov/monitoring-lab
+mon_remote_write_url: http://prometheus:9090/api/v1/write
+
+# monlab - сеть сервисов стенда, psi-stack_default - сеть Prometheus.
+mon_networks:
+  - monlab
+  - psi-stack_default
+
+mon_groups:
+  - key: infra
+    title: ""
+    width: 6
+    height: 3
+  - key: zeebe
+    title: ""
+    width: 10
+    height: 3
+  - key: apps
+    title: ""
+    width: 8
+    height: 3
+  - key: workers
+    title: "Воркеры Zeebe"
+    width: 24
+    height: 4
+
+mon_services:
+  # ---------------------------------------------------------------- infra
+  - name: redis
+    group: infra
+    kind: cache
+    probe:
+      module: tcp_connect
+      address: "redis:6379"
+    exporter: redis
+    exporter_address: "redis:6379"
+
+  - name: elasticsearch
+    group: infra
+    kind: search
+    probe:
+      module: http_2xx
+      address: "http://elasticsearch:9200/_cluster/health"
+    exporter: elasticsearch
+    exporter_address: "http://elasticsearch:9200"
+
+  - name: keycloak
+    group: infra
+    kind: auth
+    probe:
+      module: http_2xx
+      address: "http://keycloak:9000/health/ready"
+    metrics:
+      address: "keycloak:9000"
+      path: /metrics
+
+  # ---------------------------------------------------------------- zeebe
+  - name: zeebe
+    group: zeebe
+    kind: broker
+    probe:
+      module: http_2xx
+      address: "http://zeebe:9600/actuator/health"
+    metrics:
+      address: "zeebe:9600"
+      path: /actuator/prometheus
+
+  # Шлюз проверяется отдельно от actuator: тот может отвечать 200,
+  # пока gRPC-порт ещё не принимает соединения от воркеров.
+  - name: zeebe-gateway
+    group: zeebe
+    kind: gateway
+    probe:
+      module: tcp_connect
+      address: "zeebe:26500"
+
+  - name: hazelcast
+    group: zeebe
+    kind: grid
+    probe:
+      module: http_2xx
+      address: "http://hazelcast:5701/hazelcast/health/node-state"
+
+  - name: zeebe-hazelcast-api
+    group: zeebe
+    kind: api
+    probe:
+      module: http_2xx
+      address: "http://zeebe-hazelcast-api:8000/health"
+    metrics:
+      address: "zeebe-hazelcast-api:8000"
+      path: /metrics
+
+  - name: zeebe-metrics-api
+    group: zeebe
+    kind: api
+    probe:
+      module: http_2xx
+      address: "http://zeebe-metrics-api:8000/health"
+    metrics:
+      address: "zeebe-metrics-api:8000"
+      path: /metrics
+
+  # ----------------------------------------------------------------- apps
+  - name: py-service-01
+    group: apps
+    kind: python
+    probe:
+      module: http_2xx
+      address: "http://py-service-01:8000/health"
+    metrics:
+      address: "py-service-01:8000"
+      path: /metrics
+
+  - name: py-service-02
+    group: apps
+    kind: python
+    probe:
+      module: http_2xx
+      address: "http://py-service-02:8000/health"
+    metrics:
+      address: "py-service-02:8000"
+      path: /metrics
+
+  - name: cs-service-01
+    group: apps
+    kind: dotnet
+    probe:
+      module: http_2xx
+      address: "http://cs-service-01:8000/health"
+    metrics:
+      address: "cs-service-01:8000"
+      path: /metrics
+
+  - name: cs-service-02
+    group: apps
+    kind: dotnet
+    probe:
+      module: http_2xx
+      address: "http://cs-service-02:8000/health"
+    metrics:
+      address: "cs-service-02:8000"
+      path: /metrics
+
+  - name: cpp-service-01
+    group: apps
+    kind: cpp
+    probe:
+      module: http_2xx
+      address: "http://cpp-service-01:8000/health"
+    metrics:
+      address: "cpp-service-01:8000"
+      path: /metrics
+
+  # -------------------------------------------------------------- workers
+  - name: py-worker-01
+    group: workers
+    kind: worker
+    probe:
+      module: http_2xx
+      address: "http://py-worker-01:8000/health"
+    metrics:
+      address: "py-worker-01:8000"
+      path: /metrics
+
+  - name: py-worker-02
+    group: workers
+    kind: worker
+    probe:
+      module: http_2xx
+      address: "http://py-worker-02:8000/health"
+    metrics:
+      address: "py-worker-02:8000"
+      path: /metrics
+
+  - name: py-worker-03
+    group: workers
+    kind: worker
+    probe:
+      module: http_2xx
+      address: "http://py-worker-03:8000/health"
+    metrics:
+      address: "py-worker-03:8000"
+      path: /metrics
+
+  - name: py-worker-04
+    group: workers
+    kind: worker
+    probe:
+      module: http_2xx
+      address: "http://py-worker-04:8000/health"
+    metrics:
+      address: "py-worker-04:8000"
+      path: /metrics
+
+  - name: py-worker-05
+    group: workers
+    kind: worker
+    probe:
+      module: http_2xx
+      address: "http://py-worker-05:8000/health"
+    metrics:
+      address: "py-worker-05:8000"
+      path: /metrics
+
+  - name: py-worker-06
+    group: workers
+    kind: worker
+    probe:
+      module: http_2xx
+      address: "http://py-worker-06:8000/health"
+    metrics:
+      address: "py-worker-06:8000"
+      path: /metrics
+
+  - name: py-worker-07
+    group: workers
+    kind: worker
+    probe:
+      module: http_2xx
+      address: "http://py-worker-07:8000/health"
+    metrics:
+      address: "py-worker-07:8000"
+      path: /metrics
+
+  - name: py-worker-08
+    group: workers
+    kind: worker
+    probe:
+      module: http_2xx
+      address: "http://py-worker-08:8000/health"
+    metrics:
+      address: "py-worker-08:8000"
+      path: /metrics
+
+  - name: py-worker-09
+    group: workers
+    kind: worker
+    probe:
+      module: http_2xx
+      address: "http://py-worker-09:8000/health"
+    metrics:
+      address: "py-worker-09:8000"
+      path: /metrics
+
+  - name: py-worker-10
+    group: workers
+    kind: worker
+    probe:
+      module: http_2xx
+      address: "http://py-worker-10:8000/health"
+    metrics:
+      address: "py-worker-10:8000"
+      path: /metrics
+
+
+# uid оставлен прежним намеренно: иначе Grafana создаст второй дашборд,
+# а старый останется висеть сиротой.
+mon_dashboard_uid: lab-services
+
+# Умолчания роли рассчитаны на прод, для стенда их две штуки переопределяем:
+# префикс правил уже используется в существующих дашбордах, а Alertmanager
+# на проде обычно есть, здесь же его надо поднять самим.
+mon_prefix: lab
+mon_deploy_alertmanager: true

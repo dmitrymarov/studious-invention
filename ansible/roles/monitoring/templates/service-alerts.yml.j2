@@ -1,0 +1,83 @@
+# СГЕНЕРИРОВАНО Ansible - правьте не этот файл, а group_vars.
+#
+# Алерты считаются из тех же выражений, что рисуют дашборд. Это главное
+# свойство схемы: красная плитка на экране и critical в Alertmanager - одно
+# и то же число, разъехаться они не могут.
+groups:
+  - name: {{ mon_prefix }}-service-alerts
+    rules:
+      - alert: ServiceDown
+        expr: {{ mon_prefix }}:service_status == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Сервис {{ '{{' }} $labels.service {{ '}}' }} недоступен"
+          description: >-
+            Проба сервиса {{ '{{' }} $labels.service {{ '}}' }} (группа
+            {{ '{{' }} $labels.group {{ '}}' }}) не проходит более 2 минут.
+            Контейнер остановлен, не слушает порт или отвечает не-2xx.
+
+      - alert: ServiceDegraded
+        expr: {{ mon_prefix }}:service_status == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Сервис {{ '{{' }} $labels.service {{ '}}' }} работает деградированно"
+          description: >-
+            Сервис отвечает, но сообщает о проблеме либо отвечает дольше
+            {{ mon_slow_probe_seconds }} секунд. Источник видно в
+            {{ mon_prefix }}:service_degraded по метке src.
+
+      # Выдержка 2 минуты: у Zeebe и Elasticsearch долгий прогрев, без неё
+      # алерт срабатывал бы на каждом перезапуске стека.
+      - alert: ServiceFlapping
+        expr: changes({{ mon_prefix }}:service_status[15m]) > 4
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Сервис {{ '{{' }} $labels.service {{ '}}' }} нестабилен"
+          description: >-
+            Статус менялся более 4 раз за 15 минут.
+
+  - name: {{ mon_prefix }}-disk-alerts
+    rules:
+      - alert: DiskSpaceLow
+        expr: {{ mon_prefix }}:disk_status == 1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Мало места на {{ '{{' }} $labels.mountpoint {{ '}}' }}"
+          description: >-
+            Занято более {{ (mon_disk_warn_ratio * 100) | int }}% на
+            {{ '{{' }} $labels.mountpoint {{ '}}' }}.
+
+      - alert: DiskSpaceCritical
+        expr: {{ mon_prefix }}:disk_status == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Критически мало места на {{ '{{' }} $labels.mountpoint {{ '}}' }}"
+          description: >-
+            Занято более {{ (mon_disk_crit_ratio * 100) | int }}% на
+            {{ '{{' }} $labels.mountpoint {{ '}}' }}.
+
+  - name: {{ mon_prefix }}-collector-alerts
+    rules:
+      # Alloy пушит метрики сам, поэтому обычного up{job=...} для него нет:
+      # если агент умрёт, его серии просто перестанут обновляться, а панели
+      # останутся зелёными по последнему значению. Ловим это явно.
+      - alert: AlloyDown
+        expr: absent_over_time(up{job="{{ mon_prefix }}-alloy"}[5m])
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alloy не присылает метрики"
+          description: >-
+            От агента нет данных более 5 минут. Все панели статуса сейчас
+            недостоверны.

@@ -1,0 +1,67 @@
+# СГЕНЕРИРОВАНО Ansible - правьте не этот файл, а group_vars.
+#
+# Агент мониторинга. Отдельно от прикладных сервисов намеренно: их жизненные
+# циклы не должны быть связаны.
+name: monitoring-agent
+
+services:
+  alloy:
+    image: {{ mon_alloy_image }}
+    container_name: monitoring-alloy
+    restart: unless-stopped
+    # root нужен ради /proc и /sys хоста: штатный пользователь alloy
+    # (uid 473) их не прочитает.
+    user: root
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:{{ mon_alloy_port }}
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - {{ mon_config_dir }}/alloy:/etc/alloy:ro
+      - alloy-data:/var/lib/alloy/data
+      # Без propagation: в WSL корень примонтирован приватно, и rslave
+      # docker отвергает ("/ is not a shared or slave mount").
+      - /:/host/root:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    networks:
+{% for n in mon_networks %}
+      - net{{ loop.index }}
+{% endfor %}
+    ports: ["127.0.0.1:{{ mon_alloy_port }}:{{ mon_alloy_port }}"]
+    mem_limit: 512m
+{% if mon_deploy_alertmanager %}
+
+  alertmanager:
+    image: {{ mon_alertmanager_image }}
+    container_name: monitoring-alertmanager
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - {{ mon_config_dir }}/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    networks:
+{% for n in mon_networks %}
+      - net{{ loop.index }}
+{% endfor %}
+    ports: ["127.0.0.1:{{ mon_alertmanager_port }}:9093"]
+    mem_limit: 128m
+{% endif %}
+
+volumes:
+  alloy-data:
+{% if mon_deploy_alertmanager %}
+  alertmanager-data:
+{% endif %}
+
+# Сети внешние: их создают те, кто разворачивает прикладные сервисы
+# и Prometheus, а агент только подключается.
+networks:
+{% for n in mon_networks %}
+  net{{ loop.index }}:
+    external: true
+    name: {{ n }}
+{% endfor %}

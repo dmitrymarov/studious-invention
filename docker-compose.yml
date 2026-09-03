@@ -1,0 +1,399 @@
+# Тестовая среда: повторяет состав прод-сервера в контейнерах.
+#
+# Топология описана docker-метками lab.*, а не списком в конфиге Alloy:
+# добавили сервис сюда - Alloy подхватит его сам через discovery.docker.
+#   lab.monitor=true                    сервис попадает в мониторинг
+#   lab.service=<имя>                   подпись на дашборде
+#   lab.group=infra|zeebe|workers|apps  колонка на дашборде
+#   lab.metrics=<порт>/<путь>           что скрейпить (пусто - метрик нет)
+#   lab.probe=<схема>://<хост>:<порт>/<путь>   что пробить blackbox-ом
+name: monlab
+
+x-stub-common: &stub-common
+  restart: unless-stopped
+  networks: [monlab]
+  mem_limit: 128m
+  cpus: 0.15
+  stop_grace_period: 3s
+
+services:
+  # ------------------------------------------------------------------ infra
+  redis:
+    image: redis:7-alpine
+    container_name: monlab-redis
+    restart: unless-stopped
+    command: ["redis-server", "--save", "60", "1", "--maxmemory", "128mb", "--maxmemory-policy", "allkeys-lru"]
+    networks: [monlab]
+    mem_limit: 192m
+    ports: ["127.0.0.1:6379:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    labels:
+      lab.monitor: "true"
+      lab.service: "redis"
+      lab.group: "infra"
+      lab.probe: "tcp://redis:6379"
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.5
+    container_name: monlab-elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      bootstrap.memory_lock: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+      cluster.name: monlab
+      action.auto_create_index: "true"
+    networks: [monlab]
+    mem_limit: 1400m
+    ports: ["127.0.0.1:9200:9200"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    labels:
+      lab.monitor: "true"
+      lab.service: "elasticsearch"
+      lab.group: "infra"
+      lab.probe: "http://elasticsearch:9200/_cluster/health"
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.4.0
+    container_name: monlab-keycloak
+    restart: unless-stopped
+    command: ["start-dev", "--http-port=8080"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+      KC_METRICS_ENABLED: "true"
+      KC_HTTP_MANAGEMENT_PORT: "9000"
+      JAVA_OPTS_APPEND: "-Xms256m -Xmx512m"
+    networks: [monlab]
+    mem_limit: 900m
+    ports: ["127.0.0.1:8081:8080"]
+    labels:
+      lab.monitor: "true"
+      lab.service: "keycloak"
+      lab.group: "infra"
+      lab.metrics: "9000/metrics"
+      lab.probe: "http://keycloak:9000/health/ready"
+
+  # ------------------------------------------------------------------ zeebe
+  zeebe:
+    image: camunda/zeebe:8.7.9
+    container_name: monlab-zeebe
+    restart: unless-stopped
+    environment:
+      ZEEBE_BROKER_CLUSTER_PARTITIONSCOUNT: "1"
+      ZEEBE_BROKER_CLUSTER_REPLICATIONFACTOR: "1"
+      ZEEBE_BROKER_THREADS_CPUTHREADCOUNT: "1"
+      ZEEBE_BROKER_THREADS_IOTHREADCOUNT: "1"
+      ZEEBE_BROKER_DATA_DISKUSAGECOMMANDWATERMARK: "0.95"
+      ZEEBE_BROKER_DATA_DISKUSAGEREPLICATIONWATERMARK: "0.98"
+      JAVA_TOOL_OPTIONS: "-Xms512m -Xmx512m"
+    networks: [monlab]
+    mem_limit: 1200m
+    ports:
+      - "127.0.0.1:26500:26500"
+      - "127.0.0.1:9600:9600"
+    labels:
+      lab.monitor: "true"
+      lab.service: "zeebe"
+      lab.group: "zeebe"
+      lab.metrics: "9600/actuator/prometheus"
+      lab.probe: "http://zeebe:9600/actuator/health/status"
+
+  hazelcast:
+    image: hazelcast/hazelcast:5.5.0
+    container_name: monlab-hazelcast
+    restart: unless-stopped
+    environment:
+      # Без этого флага HTTP-эндпоинт /hazelcast/health/* не поднимается
+      # и остаётся только TCP-проба порта 5701.
+      JAVA_OPTS: "-Dhazelcast.http.healthcheck.enabled=true -Xms256m -Xmx384m"
+      HZ_CLUSTERNAME: monlab
+    networks: [monlab]
+    mem_limit: 700m
+    ports: ["127.0.0.1:5701:5701"]
+    labels:
+      lab.monitor: "true"
+      lab.service: "hazelcast"
+      lab.group: "zeebe"
+      lab.probe: "http://hazelcast:5701/hazelcast/health/node-state"
+
+  zeebe-hazelcast-api:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-zeebe-hazelcast-api
+    environment:
+      SERVICE_NAME: zeebe-hazelcast-api
+      SERVICE_GROUP: zeebe
+      SERVICE_ROLE: api
+      WARMUP_SECONDS: "5"
+    labels:
+      lab.monitor: "true"
+      lab.service: "zeebe-hazelcast-api"
+      lab.group: "zeebe"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://zeebe-hazelcast-api:8000/health"
+
+  zeebe-metrics-api:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-zeebe-metrics-api
+    environment:
+      SERVICE_NAME: zeebe-metrics-api
+      SERVICE_GROUP: zeebe
+      SERVICE_ROLE: metrics-api
+      WARMUP_SECONDS: "5"
+    labels:
+      lab.monitor: "true"
+      lab.service: "zeebe-metrics-api"
+      lab.group: "zeebe"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://zeebe-metrics-api:8000/health"
+
+  # ---------------------------------------------------------------- workers
+
+  py-worker-01:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-py-worker-01
+    environment:
+      SERVICE_NAME: py-worker-01
+      SERVICE_GROUP: workers
+      SERVICE_ROLE: zeebe-worker
+    labels:
+      lab.monitor: "true"
+      lab.service: "py-worker-01"
+      lab.group: "workers"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://py-worker-01:8000/health"
+
+  py-worker-02:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-py-worker-02
+    environment:
+      SERVICE_NAME: py-worker-02
+      SERVICE_GROUP: workers
+      SERVICE_ROLE: zeebe-worker
+    labels:
+      lab.monitor: "true"
+      lab.service: "py-worker-02"
+      lab.group: "workers"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://py-worker-02:8000/health"
+
+  py-worker-03:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-py-worker-03
+    environment:
+      SERVICE_NAME: py-worker-03
+      SERVICE_GROUP: workers
+      SERVICE_ROLE: zeebe-worker
+    labels:
+      lab.monitor: "true"
+      lab.service: "py-worker-03"
+      lab.group: "workers"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://py-worker-03:8000/health"
+
+  py-worker-04:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-py-worker-04
+    environment:
+      SERVICE_NAME: py-worker-04
+      SERVICE_GROUP: workers
+      SERVICE_ROLE: zeebe-worker
+    labels:
+      lab.monitor: "true"
+      lab.service: "py-worker-04"
+      lab.group: "workers"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://py-worker-04:8000/health"
+
+  py-worker-05:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-py-worker-05
+    environment:
+      SERVICE_NAME: py-worker-05
+      SERVICE_GROUP: workers
+      SERVICE_ROLE: zeebe-worker
+    labels:
+      lab.monitor: "true"
+      lab.service: "py-worker-05"
+      lab.group: "workers"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://py-worker-05:8000/health"
+
+  py-worker-06:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-py-worker-06
+    environment:
+      SERVICE_NAME: py-worker-06
+      SERVICE_GROUP: workers
+      SERVICE_ROLE: zeebe-worker
+    labels:
+      lab.monitor: "true"
+      lab.service: "py-worker-06"
+      lab.group: "workers"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://py-worker-06:8000/health"
+
+  py-worker-07:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-py-worker-07
+    environment:
+      SERVICE_NAME: py-worker-07
+      SERVICE_GROUP: workers
+      SERVICE_ROLE: zeebe-worker
+    labels:
+      lab.monitor: "true"
+      lab.service: "py-worker-07"
+      lab.group: "workers"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://py-worker-07:8000/health"
+
+  py-worker-08:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-py-worker-08
+    environment:
+      SERVICE_NAME: py-worker-08
+      SERVICE_GROUP: workers
+      SERVICE_ROLE: zeebe-worker
+    labels:
+      lab.monitor: "true"
+      lab.service: "py-worker-08"
+      lab.group: "workers"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://py-worker-08:8000/health"
+
+  py-worker-09:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-py-worker-09
+    environment:
+      SERVICE_NAME: py-worker-09
+      SERVICE_GROUP: workers
+      SERVICE_ROLE: zeebe-worker
+    labels:
+      lab.monitor: "true"
+      lab.service: "py-worker-09"
+      lab.group: "workers"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://py-worker-09:8000/health"
+
+  py-worker-10:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-py-worker-10
+    environment:
+      SERVICE_NAME: py-worker-10
+      SERVICE_GROUP: workers
+      SERVICE_ROLE: zeebe-worker
+    labels:
+      lab.monitor: "true"
+      lab.service: "py-worker-10"
+      lab.group: "workers"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://py-worker-10:8000/health"
+
+  # ------------------------------------------------------------------- apps
+  py-service-01:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-py-service-01
+    environment:
+      SERVICE_NAME: py-service-01
+      SERVICE_GROUP: apps
+      SERVICE_ROLE: python-app
+    labels:
+      lab.monitor: "true"
+      lab.service: "py-service-01"
+      lab.group: "apps"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://py-service-01:8000/health"
+
+  py-service-02:
+    <<: *stub-common
+    image: lab/python-service:local
+    container_name: monlab-py-service-02
+    environment:
+      SERVICE_NAME: py-service-02
+      SERVICE_GROUP: apps
+      SERVICE_ROLE: python-app
+    labels:
+      lab.monitor: "true"
+      lab.service: "py-service-02"
+      lab.group: "apps"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://py-service-02:8000/health"
+
+  cs-service-01:
+    <<: *stub-common
+    image: lab/csharp-service:local
+    container_name: monlab-cs-service-01
+    mem_limit: 256m
+    environment:
+      SERVICE_NAME: cs-service-01
+      SERVICE_GROUP: apps
+      SERVICE_ROLE: dotnet-app
+      WARMUP_SECONDS: "8"
+    labels:
+      lab.monitor: "true"
+      lab.service: "cs-service-01"
+      lab.group: "apps"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://cs-service-01:8000/health"
+
+  cs-service-02:
+    <<: *stub-common
+    image: lab/csharp-service:local
+    container_name: monlab-cs-service-02
+    mem_limit: 256m
+    environment:
+      SERVICE_NAME: cs-service-02
+      SERVICE_GROUP: apps
+      SERVICE_ROLE: dotnet-app
+      WARMUP_SECONDS: "8"
+    labels:
+      lab.monitor: "true"
+      lab.service: "cs-service-02"
+      lab.group: "apps"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://cs-service-02:8000/health"
+
+  cpp-service-01:
+    <<: *stub-common
+    image: lab/cpp-service:local
+    container_name: monlab-cpp-service-01
+    mem_limit: 64m
+    environment:
+      SERVICE_NAME: cpp-service-01
+      SERVICE_GROUP: apps
+      SERVICE_ROLE: cpp-app
+    labels:
+      lab.monitor: "true"
+      lab.service: "cpp-service-01"
+      lab.group: "apps"
+      lab.metrics: "8000/metrics"
+      lab.probe: "http://cpp-service-01:8000/health"
+
+networks:
+  monlab:
+    name: monlab

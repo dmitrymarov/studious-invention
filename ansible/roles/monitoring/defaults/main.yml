@@ -1,0 +1,116 @@
+---
+# =============================================================================
+# ОБЯЗАТЕЛЬНЫЕ ПЕРЕМЕННЫЕ - только эти две, остальное имеет умолчания.
+# =============================================================================
+
+# Список сервисов. Из него генерируется всё: пробы, скрейпы, правила, панели.
+# Формат одного элемента см. в roles/monitoring/README.md.
+mon_services: []
+
+# Docker-сети, в которые включается Alloy: сеть прикладных сервисов и сеть,
+# где живёт Prometheus. Обе должны существовать до запуска роли.
+mon_networks: []
+
+# =============================================================================
+# Дальше - умолчания. Переопределяйте только если у вас иначе.
+# =============================================================================
+
+# Префикс recording-правил: svc:service_status, svc:disk_used_ratio и т.д.
+mon_prefix: svc
+
+# Метка node во всех метриках - по ней различают серверы.
+mon_node_label: "{{ inventory_hostname }}"
+
+# Куда роль кладёт сгенерированные конфиги.
+mon_config_dir: /opt/monitoring
+
+# Каталоги правил и дашбордов. Они ДОЛЖНЫ быть смонтированы в Prometheus
+# и Grafana - роль их только наполняет, но не монтирует.
+mon_rules_dir: "{{ mon_config_dir }}/prometheus/rules"
+mon_dashboards_dir: "{{ mon_config_dir }}/grafana/dashboards"
+
+# Адрес Prometheus глазами Alloy, то есть изнутри docker-сети.
+mon_remote_write_url: http://prometheus:9090/api/v1/write
+
+# Адрес Prometheus глазами Ansible - для проверок и перечитывания конфига.
+mon_prometheus_api_url: http://127.0.0.1:9090
+mon_prometheus_reload_url: "{{ mon_prometheus_api_url }}/-/reload"
+
+# Проверять предпосылки перед раскаткой: существуют ли сети, включены ли
+# нужные флаги Prometheus. Выключайте, только если знаете, что делаете.
+mon_preflight: true
+
+# Alertmanager по умолчанию НЕ разворачивается: на сервере он обычно уже есть.
+mon_deploy_alertmanager: false
+
+mon_alloy_image: grafana/alloy:v1.12.0
+mon_alloy_port: 12345
+# Куда каталог конфигов монтируется ВНУТРИ контейнера. Пути внутри
+# config.alloy должны быть именно такими, а не хостовыми.
+mon_alloy_container_config_dir: /etc/alloy
+mon_alertmanager_image: prom/alertmanager:v0.28.1
+mon_alertmanager_port: 9093
+
+# Пороги. Проба дольше mon_slow_probe_seconds - жёлтый.
+mon_slow_probe_seconds: 2
+mon_disk_warn_ratio: 0.8
+mon_disk_crit_ratio: 0.9
+# Свободного места меньше этого - жёлтый / красный.
+mon_disk_free_warn_gib: 50
+mon_disk_free_crit_gib: 10
+
+# Интервалы сбора.
+mon_probe_interval: 15s
+mon_metrics_interval: 15s
+mon_exporter_interval: 30s
+
+# Что не считать за диск. /mnt отрезан из-за WSL: там диски Windows через
+# drvfs, обращение к ним может висеть секундами и валить скрейп по таймауту.
+mon_fs_mount_points_exclude: "^/(dev|proc|sys|run|mnt|snap|init|var/lib/docker)($|/)"
+mon_fs_types_exclude: "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|drvfs|9p|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs)$"
+
+# У каждого родного экспортера своя метрика "я достучался до сервиса".
+# Она ловит то, чего не видит tcp-проба: ядро принимает соединение и когда
+# процесс заморожен или не отвечает.
+mon_exporter_up_metrics:
+  redis: redis_up
+  elasticsearch: elasticsearch_cluster_health_up
+
+# ---- дашборд ----------------------------------------------------------------
+mon_dashboard_uid: services-status
+mon_dashboard_title: Статус сервисов
+mon_dashboard_refresh: 15s
+# uid датасорса Prometheus в вашей Grafana:
+# Connections -> Data sources -> нужный -> uid в адресной строке.
+mon_datasource_uid: prometheus
+
+# Колонки дашборда. Пустой список - роль выведет их из mon_services сама:
+# по строке на группу во всю ширину. Задайте явно, если хотите разложить
+# группы в несколько колонок, например infra и apps рядом.
+mon_groups: []
+
+# Текст на плитках. Цвет здесь тоже указан, но решают его пороги ниже:
+# stat берёт цвет из mappings, а state-timeline красит регионы по порогам
+# и mappings игнорирует.
+mon_status_mappings:
+  - type: value
+    options:
+      "0": {text: "НЕДОСТУПЕН", color: red, index: 0}
+      "1": {text: "ДЕГРАДАЦИЯ", color: yellow, index: 1}
+      "2": {text: "РАБОТАЕТ", color: green, index: 2}
+  - type: special
+    options:
+      match: "null"
+      result: {text: "НЕТ ДАННЫХ", color: text, index: 3}
+
+# Значению v достаётся цвет последнего шага, у которого value <= v:
+#   0 -> база (red), 1 -> yellow (0.5 <= 1), 2 -> green (1.5 <= 2)
+mon_status_thresholds:
+  mode: absolute
+  steps:
+    - {color: red, value: null}
+    - {color: yellow, value: 0.5}
+    - {color: green, value: 1.5}
+
+# ---- служебное --------------------------------------------------------------
+mon_promtool_image: prom/prometheus:v3.7.3

@@ -1,0 +1,30 @@
+# СГЕНЕРИРОВАНО Ansible.
+#
+# Приёмник - заглушка: подставьте сюда реальный webhook или почту.
+global:
+  resolve_timeout: 5m
+
+route:
+  # Группируем по сервису, а не по alertname: когда падает сервис, человеку
+  # нужно одно сообщение про него, а не отдельное на каждое правило.
+  group_by: ["service"]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: default
+
+  routes:
+    - matchers: ['severity="critical"']
+      receiver: critical
+      group_wait: 10s
+      repeat_interval: 1h
+
+receivers:
+  - name: default
+  - name: critical
+
+inhibit_rules:
+  # Сервис лежит - деградация того же сервиса уже не новость.
+  - source_matchers: ['severity="critical"']
+    target_matchers: ['severity="warning"']
+    equal: ["service"]

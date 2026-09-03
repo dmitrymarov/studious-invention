@@ -1,0 +1,62 @@
+# СГЕНЕРИРОВАНО Ansible - правьте не этот файл, а group_vars.
+#
+# Агент мониторинга. Отдельно от прикладных сервисов намеренно: их жизненные
+# циклы не должны быть связаны.
+name: monitoring-agent
+
+services:
+  alloy:
+    image: grafana/alloy:v1.12.0
+    container_name: monitoring-alloy
+    restart: unless-stopped
+    # root нужен ради /proc и /sys хоста: штатный пользователь alloy
+    # (uid 473) их не прочитает.
+    user: root
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - /home/marov/monitoring-lab/alloy:/etc/alloy:ro
+      - alloy-data:/var/lib/alloy/data
+      # Без propagation: в WSL корень примонтирован приватно, и rslave
+      # docker отвергает ("/ is not a shared or slave mount").
+      - /:/host/root:ro
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+    networks:
+      - net1
+      - net2
+    ports: ["127.0.0.1:12345:12345"]
+    mem_limit: 512m
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    container_name: monitoring-alertmanager
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+      - --storage.path=/alertmanager
+    volumes:
+      - /home/marov/monitoring-lab/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    networks:
+      - net1
+      - net2
+    ports: ["127.0.0.1:9093:9093"]
+    mem_limit: 128m
+
+volumes:
+  alloy-data:
+  alertmanager-data:
+
+# Сети внешние: их создают те, кто разворачивает прикладные сервисы
+# и Prometheus, а агент только подключается.
+networks:
+  net1:
+    external: true
+    name: monlab
+  net2:
+    external: true
+    name: psi-stack_default

@@ -1,0 +1,19 @@
+---
+# lab  - стенд в WSL, разворачивается локально
+# prod - ваш сервер; скопируйте group_vars/prod.yml.example в prod.yml
+#        и впишите туда свои имена контейнеров
+all:
+  children:
+    monitoring:
+      children:
+        lab:
+          hosts:
+            localhost:
+              ansible_connection: local
+              ansible_python_interpreter: "{{ ansible_playbook_python }}"
+        prod:
+          hosts: {}
+          # Раскомментируйте и подставьте свой сервер:
+          #   my-server:
+          #     ansible_host: 10.0.0.10
+          #     ansible_user: deploy

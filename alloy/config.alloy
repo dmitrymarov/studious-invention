@@ -1,0 +1,421 @@
+// СГЕНЕРИРОВАНО Ansible - правьте не этот файл, а mon_services в group_vars.
+//
+// Grafana Alloy - единственный коллектор.
+//   1. Пробит все сервисы blackbox-ом  -> probe_success (красный / зелёный)
+//   2. Скрейпит /metrics приложений    -> app_degraded  (жёлтый)
+//   3. Снимает инфраструктуру родными экспортерами
+//   4. Снимает место на диске
+//   5. Пушит всё в Prometheus через remote_write
+//
+// Светофор считается не здесь, а recording-правилами Prometheus - там же,
+// где живут алерты, чтобы цвет на дашборде и условие алерта не разъехались.
+
+// -----------------------------------------------------------------------------
+// 1. ИНВЕНТАРЬ СЕРВИСОВ И ПРОБЫ ДОСТУПНОСТИ
+//
+// Список статический, и это осознанно. Автообнаружение видит только
+// ЗАПУЩЕННЫЕ контейнеры: если сервис упал, его цель исчезнет, probe_success
+// перестанет писаться, и панель покажет "нет данных" вместо красного -
+// ровно тогда, когда красный и нужен. Статический список это декларация
+// "эти сервисы обязаны работать", и она даёт честный красный.
+// -----------------------------------------------------------------------------
+prometheus.exporter.blackbox "services" {
+  config_file = "/etc/alloy/blackbox.yml"
+
+  target {
+    name    = "redis"
+    address = "redis:6379"
+    module  = "tcp_connect"
+    labels  = { service = "redis", group = "infra", kind = "cache" }
+  }
+
+  target {
+    name    = "elasticsearch"
+    address = "http://elasticsearch:9200/_cluster/health"
+    module  = "http_2xx"
+    labels  = { service = "elasticsearch", group = "infra", kind = "search" }
+  }
+
+  target {
+    name    = "keycloak"
+    address = "http://keycloak:9000/health/ready"
+    module  = "http_2xx"
+    labels  = { service = "keycloak", group = "infra", kind = "auth" }
+  }
+
+  target {
+    name    = "zeebe"
+    address = "http://zeebe:9600/actuator/health"
+    module  = "http_2xx"
+    labels  = { service = "zeebe", group = "zeebe", kind = "broker" }
+  }
+
+  target {
+    name    = "zeebe-gateway"
+    address = "zeebe:26500"
+    module  = "tcp_connect"
+    labels  = { service = "zeebe-gateway", group = "zeebe", kind = "gateway" }
+  }
+
+  target {
+    name    = "hazelcast"
+    address = "http://hazelcast:5701/hazelcast/health/node-state"
+    module  = "http_2xx"
+    labels  = { service = "hazelcast", group = "zeebe", kind = "grid" }
+  }
+
+  target {
+    name    = "zeebe-hazelcast-api"
+    address = "http://zeebe-hazelcast-api:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "zeebe-hazelcast-api", group = "zeebe", kind = "api" }
+  }
+
+  target {
+    name    = "zeebe-metrics-api"
+    address = "http://zeebe-metrics-api:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "zeebe-metrics-api", group = "zeebe", kind = "api" }
+  }
+
+  target {
+    name    = "py-service-01"
+    address = "http://py-service-01:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "py-service-01", group = "apps", kind = "python" }
+  }
+
+  target {
+    name    = "py-service-02"
+    address = "http://py-service-02:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "py-service-02", group = "apps", kind = "python" }
+  }
+
+  target {
+    name    = "cs-service-01"
+    address = "http://cs-service-01:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "cs-service-01", group = "apps", kind = "dotnet" }
+  }
+
+  target {
+    name    = "cs-service-02"
+    address = "http://cs-service-02:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "cs-service-02", group = "apps", kind = "dotnet" }
+  }
+
+  target {
+    name    = "cpp-service-01"
+    address = "http://cpp-service-01:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "cpp-service-01", group = "apps", kind = "cpp" }
+  }
+
+  target {
+    name    = "py-worker-01"
+    address = "http://py-worker-01:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "py-worker-01", group = "workers", kind = "worker" }
+  }
+
+  target {
+    name    = "py-worker-02"
+    address = "http://py-worker-02:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "py-worker-02", group = "workers", kind = "worker" }
+  }
+
+  target {
+    name    = "py-worker-03"
+    address = "http://py-worker-03:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "py-worker-03", group = "workers", kind = "worker" }
+  }
+
+  target {
+    name    = "py-worker-04"
+    address = "http://py-worker-04:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "py-worker-04", group = "workers", kind = "worker" }
+  }
+
+  target {
+    name    = "py-worker-05"
+    address = "http://py-worker-05:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "py-worker-05", group = "workers", kind = "worker" }
+  }
+
+  target {
+    name    = "py-worker-06"
+    address = "http://py-worker-06:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "py-worker-06", group = "workers", kind = "worker" }
+  }
+
+  target {
+    name    = "py-worker-07"
+    address = "http://py-worker-07:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "py-worker-07", group = "workers", kind = "worker" }
+  }
+
+  target {
+    name    = "py-worker-08"
+    address = "http://py-worker-08:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "py-worker-08", group = "workers", kind = "worker" }
+  }
+
+  target {
+    name    = "py-worker-09"
+    address = "http://py-worker-09:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "py-worker-09", group = "workers", kind = "worker" }
+  }
+
+  target {
+    name    = "py-worker-10"
+    address = "http://py-worker-10:8000/health"
+    module  = "http_2xx"
+    labels  = { service = "py-worker-10", group = "workers", kind = "worker" }
+  }
+}
+
+// Экспортер сам проставляет job=integrations/blackbox/<имя>, уникальный на
+// каждую цель. Приводим к одному осмысленному job и делаем instance
+// различимым: иначе пара job+instance совпадёт у всех целей и Prometheus
+// отбросит их как дубли.
+discovery.relabel "blackbox" {
+  targets = prometheus.exporter.blackbox.services.targets
+
+  rule {
+    source_labels = ["service"]
+    target_label  = "instance"
+    action        = "replace"
+  }
+
+  rule {
+    target_label = "job"
+    replacement  = "lab-blackbox"
+    action       = "replace"
+  }
+}
+
+prometheus.scrape "blackbox" {
+  targets         = discovery.relabel.blackbox.output
+  forward_to      = [prometheus.remote_write.prom.receiver]
+  job_name        = "lab-blackbox"
+  scrape_interval = "15s"
+  scrape_timeout  = "10s"
+}
+
+// -----------------------------------------------------------------------------
+// 2. СОБСТВЕННЫЕ МЕТРИКИ СЕРВИСОВ
+//
+// Цели тоже статические и берутся из того же списка. Автообнаружение по
+// docker-меткам здесь не используется намеренно: оно требует, чтобы метки
+// проставили на чужих контейнерах, а состав сервисов всё равно описан выше.
+// -----------------------------------------------------------------------------
+prometheus.scrape "app_metrics" {
+  targets = [
+    {"__address__" = "keycloak:9000", "__metrics_path__" = "/metrics", "service" = "keycloak", "group" = "infra"},
+    {"__address__" = "zeebe:9600", "__metrics_path__" = "/actuator/prometheus", "service" = "zeebe", "group" = "zeebe"},
+    {"__address__" = "zeebe-hazelcast-api:8000", "__metrics_path__" = "/metrics", "service" = "zeebe-hazelcast-api", "group" = "zeebe"},
+    {"__address__" = "zeebe-metrics-api:8000", "__metrics_path__" = "/metrics", "service" = "zeebe-metrics-api", "group" = "zeebe"},
+    {"__address__" = "py-service-01:8000", "__metrics_path__" = "/metrics", "service" = "py-service-01", "group" = "apps"},
+    {"__address__" = "py-service-02:8000", "__metrics_path__" = "/metrics", "service" = "py-service-02", "group" = "apps"},
+    {"__address__" = "cs-service-01:8000", "__metrics_path__" = "/metrics", "service" = "cs-service-01", "group" = "apps"},
+    {"__address__" = "cs-service-02:8000", "__metrics_path__" = "/metrics", "service" = "cs-service-02", "group" = "apps"},
+    {"__address__" = "cpp-service-01:8000", "__metrics_path__" = "/metrics", "service" = "cpp-service-01", "group" = "apps"},
+    {"__address__" = "py-worker-01:8000", "__metrics_path__" = "/metrics", "service" = "py-worker-01", "group" = "workers"},
+    {"__address__" = "py-worker-02:8000", "__metrics_path__" = "/metrics", "service" = "py-worker-02", "group" = "workers"},
+    {"__address__" = "py-worker-03:8000", "__metrics_path__" = "/metrics", "service" = "py-worker-03", "group" = "workers"},
+    {"__address__" = "py-worker-04:8000", "__metrics_path__" = "/metrics", "service" = "py-worker-04", "group" = "workers"},
+    {"__address__" = "py-worker-05:8000", "__metrics_path__" = "/metrics", "service" = "py-worker-05", "group" = "workers"},
+    {"__address__" = "py-worker-06:8000", "__metrics_path__" = "/metrics", "service" = "py-worker-06", "group" = "workers"},
+    {"__address__" = "py-worker-07:8000", "__metrics_path__" = "/metrics", "service" = "py-worker-07", "group" = "workers"},
+    {"__address__" = "py-worker-08:8000", "__metrics_path__" = "/metrics", "service" = "py-worker-08", "group" = "workers"},
+    {"__address__" = "py-worker-09:8000", "__metrics_path__" = "/metrics", "service" = "py-worker-09", "group" = "workers"},
+    {"__address__" = "py-worker-10:8000", "__metrics_path__" = "/metrics", "service" = "py-worker-10", "group" = "workers"},
+  ]
+
+  forward_to      = [prometheus.remote_write.prom.receiver]
+  job_name        = "lab-apps"
+  scrape_interval = "15s"
+}
+
+// -----------------------------------------------------------------------------
+// 3. РОДНЫЕ ЭКСПОРТЕРЫ ИНФРАСТРУКТУРЫ
+//
+// Пробы дают только "жив / не жив". Жёлтый цвет берётся отсюда: у ES это
+// штатный статус кластера, у Redis - отвалившееся сохранение и упор в maxmemory.
+// -----------------------------------------------------------------------------
+prometheus.exporter.redis "redis" {
+  redis_addr         = "redis:6379"
+  connection_timeout = "5s"
+}
+
+discovery.relabel "redis" {
+  targets = prometheus.exporter.redis.redis.targets
+
+  rule {
+    target_label = "service"
+    replacement  = "redis"
+    action       = "replace"
+  }
+
+  rule {
+    target_label = "group"
+    replacement  = "infra"
+    action       = "replace"
+  }
+
+  rule {
+    target_label = "job"
+    replacement  = "lab-redis"
+    action       = "replace"
+  }
+}
+
+prometheus.scrape "redis" {
+  targets         = discovery.relabel.redis.output
+  forward_to      = [prometheus.remote_write.prom.receiver]
+  job_name        = "lab-redis"
+  scrape_interval = "30s"
+}
+
+prometheus.exporter.elasticsearch "elasticsearch" {
+  address = "http://elasticsearch:9200"
+  timeout = "10s"
+  indices = true
+}
+
+discovery.relabel "elasticsearch" {
+  targets = prometheus.exporter.elasticsearch.elasticsearch.targets
+
+  rule {
+    target_label = "service"
+    replacement  = "elasticsearch"
+    action       = "replace"
+  }
+
+  rule {
+    target_label = "group"
+    replacement  = "infra"
+    action       = "replace"
+  }
+
+  rule {
+    target_label = "job"
+    replacement  = "lab-elasticsearch"
+    action       = "replace"
+  }
+}
+
+prometheus.scrape "elasticsearch" {
+  targets         = discovery.relabel.elasticsearch.output
+  forward_to      = [prometheus.remote_write.prom.receiver]
+  job_name        = "lab-elasticsearch"
+  scrape_interval = "30s"
+}
+
+// -----------------------------------------------------------------------------
+// 4. ХОСТ: МЕСТО НА ДИСКЕ
+//
+// Тот же node_exporter, только встроенный в Alloy - отдельный контейнер
+// экспортера не нужен, всё собирает один агент.
+// -----------------------------------------------------------------------------
+prometheus.exporter.unix "host" {
+  rootfs_path              = "/host/root"
+  procfs_path              = "/host/proc"
+  sysfs_path               = "/host/sys"
+  include_exporter_metrics = false
+  set_collectors           = ["filesystem", "diskstats", "meminfo", "loadavg", "cpu"]
+
+  filesystem {
+    mount_points_exclude = "^/(dev|proc|sys|run|mnt|snap|init|var/lib/docker)($|/)"
+    fs_types_exclude     = "^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|drvfs|9p|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tmpfs|tracefs)$"
+    mount_timeout        = "5s"
+  }
+}
+
+discovery.relabel "host" {
+  targets = prometheus.exporter.unix.host.targets
+
+  rule {
+    target_label = "job"
+    replacement  = "lab-host"
+    action       = "replace"
+  }
+  rule {
+    target_label = "instance"
+    replacement  = "wsl"
+    action       = "replace"
+  }
+
+}
+
+prometheus.scrape "host" {
+  targets         = discovery.relabel.host.output
+  forward_to      = [prometheus.remote_write.prom.receiver]
+  job_name        = "lab-host"
+  scrape_interval = "30s"
+}
+
+// -----------------------------------------------------------------------------
+// 5. САМОДИАГНОСТИКА АГЕНТА
+//
+// Если ослепнет сам Alloy, панели останутся зелёными по инерции последнего
+// значения - поэтому за агентом следит отдельный алерт.
+// -----------------------------------------------------------------------------
+prometheus.exporter.self "alloy" {}
+
+discovery.relabel "alloy_self" {
+  targets = prometheus.exporter.self.alloy.targets
+
+  rule {
+    target_label = "job"
+    replacement  = "lab-alloy"
+    action       = "replace"
+  }
+  rule {
+    target_label = "instance"
+    replacement  = "wsl"
+    action       = "replace"
+  }
+
+}
+
+prometheus.scrape "alloy" {
+  targets         = discovery.relabel.alloy_self.output
+  forward_to      = [prometheus.remote_write.prom.receiver]
+  job_name        = "lab-alloy"
+  scrape_interval = "30s"
+}
+
+// -----------------------------------------------------------------------------
+// 6. ОТПРАВКА В PROMETHEUS
+// -----------------------------------------------------------------------------
+prometheus.remote_write "prom" {
+  external_labels = {
+    node      = "wsl",
+    collector = "alloy",
+  }
+
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+
+    queue_config {
+      capacity   = 5000
+      max_shards = 5
+    }
+  }
+}
+
+logging {
+  level  = "info"
+  format = "logfmt"
+}
