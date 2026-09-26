@@ -1,6 +1,0 @@
----
-- name: Мониторинг сервисов через Grafana Alloy
-  hosts: monitoring
-  gather_facts: false
-  roles:
-    - monitoring
